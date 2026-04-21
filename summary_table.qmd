@@ -1,0 +1,177 @@
+---
+title: "Data Summary"
+format:
+  html:
+    theme: cosmo
+    toc: false
+    page-layout: full
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(readxl)
+library(dplyr)
+library(purrr)
+library(glue)
+library(reactable)
+library(htmltools)
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+
+FOLDER_PATH <- "metadata"   # <-- change this
+
+# Column name mapping (case-insensitive)
+COL_STATE    <- "State"
+COL_DISTRICT <- "District"
+COL_DATE     <- "Date"
+
+# ── Read and combine all Excel files ──────────────────────────────────────────
+
+xlsx_files <- list.files(FOLDER_PATH, pattern = "\\.xlsx$", full.names = TRUE)
+
+if (length(xlsx_files) == 0) stop("No .xlsx files found in: ", FOLDER_PATH)
+
+combined_df <- xlsx_files |>
+  set_names(basename) |>
+  map(\(path) {
+    read_excel(path) |>
+      mutate(
+        file_source = sub("^[^_]*_(.+)\\.xlsx$", "\\1", basename(path)),
+        .before = 1
+      )
+  }) |>
+  list_rbind()
+
+# ── Normalise column names ─────────────────────────────────────────────────────
+
+find_col <- function(df, target) {
+  match <- names(df)[tolower(names(df)) == tolower(target)]
+  if (length(match) == 0) stop(glue(
+    "Column '{target}' not found. Available: {paste(names(df), collapse = ', ')}"
+  ))
+  match[1]
+}
+
+state_col    <- find_col(combined_df, COL_STATE)
+district_col <- find_col(combined_df, COL_DISTRICT)
+date_col     <- find_col(combined_df, COL_DATE)
+
+# ── Build summary table ────────────────────────────────────────────────────────
+
+summary_df <- combined_df |>
+  group_by(
+    `File Source`    = file_source,
+    State            = .data[[state_col]],
+    District         = .data[[district_col]],
+    `Reporting Date` = as.Date(.data[[date_col]])
+  ) |>
+  summarise(`Number of Entries` = n(), .groups = "drop") |>
+  arrange(`File Source`, State, District, `Reporting Date`)
+
+# ── Colour scale for entries column ───────────────────────────────────────────
+
+entries_pal <- function(x) {
+  rng  <- range(x, na.rm = TRUE)
+  norm <- (x - rng[1]) / max(rng[2] - rng[1], 1)
+  r <- round(255 - norm * (255 - 33))
+  g <- round(255 - norm * (255 - 113))
+  b <- round(255 - norm * (255 - 181))
+  paste0("rgb(", r, ",", g, ",", b, ")")
+}
+
+entry_colors <- entries_pal(summary_df[["Number of Entries"]])
+```
+
+```{r subtitle}
+n_entries <- format(nrow(combined_df), big.mark = ",")
+n_files   <- length(xlsx_files)
+gen_date  <- format(Sys.Date(), "%d %b %Y")
+```
+
+::: {.report-subtitle}
+`r glue("{n_entries} total entries across {n_files} file(s)")`  ·  Source: `r FOLDER_PATH`  ·  Generated `r gen_date`
+:::
+
+```{r table}
+reactable(
+  summary_df,
+  searchable          = TRUE,
+  filterable          = TRUE,
+  defaultPageSize     = 20,
+  showPageSizeOptions = TRUE,
+  pageSizeOptions     = c(10, 20, 50, 100),
+  sortable            = TRUE,
+  defaultSorted       = list(`File Source` = "asc", State = "asc"),
+  resizable           = TRUE,
+  striped             = TRUE,
+  highlight           = TRUE,
+  bordered            = TRUE,
+  columns = list(
+    `File Source` = colDef(
+      name     = "File Source",
+      minWidth = 160,
+      cell     = function(value) tags$span(
+        style = "font-weight:600; color:#1a5276;", value
+      )
+    ),
+    State            = colDef(name = "State",          minWidth = 120),
+    District         = colDef(name = "District",       minWidth = 130),
+    `Reporting Date` = colDef(
+      name     = "Reporting Date",
+      minWidth = 130,
+      format   = colFormat(date = TRUE, locales = "en-GB")
+    ),
+    `Number of Entries` = colDef(
+      name     = "# Entries",
+      minWidth = 100,
+      align    = "right",
+      format   = colFormat(separators = TRUE),
+      style    = function(value, index) list(
+        background = entry_colors[index],
+        fontWeight = "600"
+      ),
+      footer = function(values) tags$b(format(sum(values), big.mark = ","))
+    )
+  ),
+  defaultColDef = colDef(footerStyle = list(fontWeight = "bold")),
+  theme = reactableTheme(
+    color            = "#1c2833",
+    backgroundColor  = "#ffffff",
+    borderColor      = "#dde3ea",
+    stripedColor     = "#f4f7fb",
+    highlightColor   = "#e8f0fe",
+    cellPadding      = "8px 14px",
+    searchInputStyle = list(width = "100%"),
+    style            = list(fontFamily = "Lato, sans-serif", fontSize = "14px"),
+    headerStyle      = list(
+      background  = "#1a5276",
+      color       = "#ffffff",
+      fontWeight  = "700",
+      borderColor = "#154360"
+    ),
+    filterInputStyle = list(
+      background  = "#eaf0fb",
+      borderColor = "#aac4e8",
+      fontSize    = "12px"
+    ),
+    footerStyle = list(
+      background = "#d6e4f0",
+      color      = "#1a5276",
+      fontWeight = "bold"
+    )
+  )
+)
+```
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;600;700&display=swap');
+body { font-family: 'Lato', sans-serif; }
+.report-subtitle {
+  font-size: 13px;
+  color: #7f8c8d;
+  margin-bottom: 20px;
+}
+</style>
